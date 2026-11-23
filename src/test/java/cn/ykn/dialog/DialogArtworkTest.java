@@ -73,8 +73,10 @@ class DialogArtworkTest {
         int expectedThemes = DialogArtwork.values().length - 2; // excludes HUB & BAGS
         int rowsPerTheme = DialogArtwork.MAX_ROWS - DialogArtwork.MIN_ROWS + 1;
         assertEquals(expectedThemes * rowsPerTheme * 2, bitmapProviders);
-        assertTrue(DialogArtwork.WARDROBE.isAvailable(availableFiles, List.of(Component.text("状态"))));
-        assertTrue(DialogArtwork.ISLAND.isAvailable(availableFiles, List.of(Component.text("岛屿状态"))));
+        for (DialogArtwork artwork : DialogArtwork.values()) {
+            if (artwork == DialogArtwork.HUB || artwork == DialogArtwork.BAGS) continue;
+            assertTrue(artwork.isAvailable(availableFiles, List.of(Component.text("状态"))), artwork.name());
+        }
     }
 
     @Test
