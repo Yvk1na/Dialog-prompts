@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class DialogArtworkTest {
     @Test
-    void bundlesAllEightArtworksAtExpectedResolution() throws Exception {
+    void bundlesAllArtworksAtExpectedResolution() throws Exception {
         for (DialogArtwork artwork : DialogArtwork.values()) {
             byte[] bytes = artwork.sourceBytes();
             assertNotNull(bytes, "Missing resource for " + artwork);
@@ -74,6 +74,7 @@ class DialogArtworkTest {
         int rowsPerTheme = DialogArtwork.MAX_ROWS - DialogArtwork.MIN_ROWS + 1;
         assertEquals(expectedThemes * rowsPerTheme * 2, bitmapProviders);
         assertTrue(DialogArtwork.WARDROBE.isAvailable(availableFiles, List.of(Component.text("状态"))));
+        assertTrue(DialogArtwork.ISLAND.isAvailable(availableFiles, List.of(Component.text("岛屿状态"))));
     }
 
     @Test

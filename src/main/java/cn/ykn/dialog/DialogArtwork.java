@@ -35,7 +35,8 @@ public enum DialogArtwork {
     BANK(0xF59E0B),
     AUCTION(0xF59E0B),
     BAZAAR(0x34D399),
-    MINION(0x38BDF8);
+    MINION(0x38BDF8),
+    ISLAND(0xFBBF24);
 
     public static final int WIDTH = 310;
     private static final int TILE_WIDTH = WIDTH / 2;

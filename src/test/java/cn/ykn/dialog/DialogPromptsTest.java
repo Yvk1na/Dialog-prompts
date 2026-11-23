@@ -212,6 +212,32 @@ class DialogPromptsTest {
         assertTrue(sent.stream().anyMatch(line -> line.contains("超时")));
     }
 
+    @Test
+    void vanillaUiPreferenceDisablesDialogAndRunsFallbackOnModernClient() {
+        FakeBridge bridge = new FakeBridge(775);
+        DialogPrompts prompts = DialogPrompts.forTesting(bridge);
+        Player player = fakePlayer(UUID.randomUUID(), true, new ArrayList<>());
+
+        assertTrue(prompts.supportsNativeDialog(player));
+        assertTrue(prompts.supportsDialog(player));
+
+        bridge.preferVanillaUi = true;
+        assertTrue(prompts.supportsNativeDialog(player));
+        assertFalse(prompts.supportsDialog(player));
+
+        AtomicBoolean fallbackRan = new AtomicBoolean();
+        boolean usedDialog = prompts.showOrFallback(player, "ui-test",
+                () -> {
+                    fail("dialogFactory should not run when player prefers vanilla UI");
+                    return null;
+                },
+                () -> fallbackRan.set(true));
+
+        assertFalse(usedDialog);
+        assertTrue(fallbackRan.get());
+        assertEquals(0, bridge.dialogsShown);
+    }
+
     private static Player fakePlayer(UUID id, boolean online, List<String> sentMessages) {
         return (Player) Proxy.newProxyInstance(
                 Player.class.getClassLoader(),
@@ -234,6 +260,7 @@ class DialogPromptsTest {
 
     private static final class FakeBridge implements DialogPrompts.RuntimeBridge {
         private final int protocol;
+        private boolean preferVanillaUi;
         private boolean failShowDialog;
         private boolean deferMainThread;
         private int dialogsShown;
@@ -248,6 +275,11 @@ class DialogPromptsTest {
         @Override
         public int protocol(Player player) {
             return protocol;
+        }
+
+        @Override
+        public boolean prefersVanillaUi(Player player) {
+            return preferVanillaUi;
         }
 
         @Override

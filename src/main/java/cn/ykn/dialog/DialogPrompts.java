@@ -32,6 +32,7 @@ import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -39,6 +40,8 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -51,6 +54,8 @@ import org.bukkit.scheduler.BukkitTask;
  */
 public final class DialogPrompts implements Listener, AutoCloseable {
     public static final int PROTO_DIALOG = DialogProtocolSupport.PROTO_DIALOG;
+    public static final NamespacedKey VANILLA_UI_PREFERENCE_KEY =
+            Objects.requireNonNull(NamespacedKey.fromString("skyblock-core:prefer_vanilla_ui"));
     private static final String INPUT_KEY = "val";
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
     private static final int DEFAULT_INPUT_WIDTH = 260;
@@ -62,6 +67,10 @@ public final class DialogPrompts implements Listener, AutoCloseable {
 
     interface RuntimeBridge {
         int protocol(Player player);
+
+        default boolean prefersVanillaUi(Player player) {
+            return false;
+        }
 
         void forgetProtocol(UUID playerId);
 
@@ -190,8 +199,43 @@ public final class DialogPrompts implements Listener, AutoCloseable {
         return bridge.protocol(player);
     }
 
-    public boolean supportsDialog(Player player) {
+    /** Returns whether the player's client protocol natively supports Paper Dialogs. */
+    public boolean supportsNativeDialog(Player player) {
         return player != null && bridge.protocol(player) >= PROTO_DIALOG;
+    }
+
+    /** Returns whether Dialog UI is active for this player (protocol 771+ and not set to vanilla UI). */
+    public boolean supportsDialog(Player player) {
+        return supportsNativeDialog(player) && !bridge.prefersVanillaUi(player);
+    }
+
+    /** Reads the persistent per-player UI mode preference stored on the player's PDC. */
+    public static boolean isPreferVanillaUi(Player player) {
+        if (player == null) {
+            return false;
+        }
+        try {
+            PersistentDataContainer pdc = player.getPersistentDataContainer();
+            return pdc != null && pdc.getOrDefault(VANILLA_UI_PREFERENCE_KEY, PersistentDataType.BYTE, (byte) 0) != 0;
+        } catch (RuntimeException | LinkageError ignored) {
+            return false;
+        }
+    }
+
+    /** Updates the persistent per-player UI mode preference stored on the player's PDC. */
+    public static void setPreferVanillaUi(Player player, boolean preferVanilla) {
+        if (player == null) {
+            return;
+        }
+        PersistentDataContainer pdc = player.getPersistentDataContainer();
+        if (pdc == null) {
+            return;
+        }
+        if (preferVanilla) {
+            pdc.set(VANILLA_UI_PREFERENCE_KEY, PersistentDataType.BYTE, (byte) 1);
+        } else {
+            pdc.remove(VANILLA_UI_PREFERENCE_KEY);
+        }
     }
 
     public Set<String> loadedPackFiles(Player player) {
@@ -765,6 +809,11 @@ public final class DialogPrompts implements Listener, AutoCloseable {
         @Override
         public int protocol(Player player) {
             return protocolSupport.protocol(player);
+        }
+
+        @Override
+        public boolean prefersVanillaUi(Player player) {
+            return DialogPrompts.isPreferVanillaUi(player);
         }
 
         @Override
