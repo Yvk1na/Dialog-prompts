@@ -56,6 +56,8 @@ public final class DialogPrompts implements Listener, AutoCloseable {
     public static final int PROTO_DIALOG = DialogProtocolSupport.PROTO_DIALOG;
     public static final NamespacedKey VANILLA_UI_PREFERENCE_KEY =
             Objects.requireNonNull(NamespacedKey.fromString("skyblock-core:prefer_vanilla_ui"));
+    public static final NamespacedKey DIALOG_SIZE_PREFERENCE_KEY =
+            Objects.requireNonNull(NamespacedKey.fromString("skyblock-core:dialog_size"));
     private static final String INPUT_KEY = "val";
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
     private static final int DEFAULT_INPUT_WIDTH = 260;
@@ -70,6 +72,10 @@ public final class DialogPrompts implements Listener, AutoCloseable {
 
         default boolean prefersVanillaUi(Player player) {
             return false;
+        }
+
+        default DialogSize dialogSize(Player player) {
+            return DialogSize.STANDARD;
         }
 
         void forgetProtocol(UUID playerId);
@@ -238,21 +244,77 @@ public final class DialogPrompts implements Listener, AutoCloseable {
         }
     }
 
+    /** Returns the active {@link DialogSize} preset for this player. */
+    public DialogSize size(Player player) {
+        if (player == null) {
+            return DialogSize.STANDARD;
+        }
+        DialogSize resolved = bridge.dialogSize(player);
+        return resolved == null ? DialogSize.STANDARD : resolved;
+    }
+
+    /** Reads the persistent per-player Dialog size preset stored on the player's PDC. */
+    public static DialogSize dialogSize(Player player) {
+        if (player == null) {
+            return DialogSize.STANDARD;
+        }
+        try {
+            PersistentDataContainer pdc = player.getPersistentDataContainer();
+            if (pdc == null) {
+                return DialogSize.STANDARD;
+            }
+            return DialogSize.fromId(pdc.get(DIALOG_SIZE_PREFERENCE_KEY, PersistentDataType.STRING));
+        } catch (RuntimeException | LinkageError ignored) {
+            return DialogSize.STANDARD;
+        }
+    }
+
+    /** Updates the persistent per-player Dialog size preset stored on the player's PDC. */
+    public static void setDialogSize(Player player, DialogSize size) {
+        if (player == null) {
+            return;
+        }
+        PersistentDataContainer pdc = player.getPersistentDataContainer();
+        if (pdc == null) {
+            return;
+        }
+        if (size == null || size == DialogSize.STANDARD) {
+            pdc.remove(DIALOG_SIZE_PREFERENCE_KEY);
+        } else {
+            pdc.set(DIALOG_SIZE_PREFERENCE_KEY, PersistentDataType.STRING, size.id());
+        }
+    }
+
+    /** Advances and persists the player's Dialog size preset, returning the new preset. */
+    public static DialogSize cycleDialogSize(Player player) {
+        DialogSize next = dialogSize(player).next();
+        setDialogSize(player, next);
+        return next;
+    }
+
     public Set<String> loadedPackFiles(Player player) {
         return resourcePack == null ? Set.of() : resourcePack.loadedFiles(player.getUniqueId());
     }
 
     public List<DialogBody> artworkBody(Player player, DialogArtwork artwork, List<Component> lines) {
+        DialogSize size = size(player);
         return artworkBody(player, artwork, lines,
-                () -> lines.stream().filter(Objects::nonNull).map(line -> (DialogBody) DialogBody.plainMessage(line)).toList());
+                () -> lines.stream()
+                        .filter(Objects::nonNull)
+                        .map(line -> (DialogBody) DialogBody.plainMessage(line, size.bodyWidth(DialogArtwork.WIDTH)))
+                        .toList());
     }
 
     public List<DialogBody> artworkBody(Player player, DialogArtwork artwork, List<Component> lines,
                                        Supplier<List<DialogBody>> fallback) {
-        if (artwork != null && artwork.isAvailable(loadedPackFiles(player), lines)) {
+        if (useArtwork(player, artwork, loadedPackFiles(player), lines)) {
             return List.of(DialogBody.plainMessage(artwork.overlay(lines), DialogArtwork.WIDTH + 16));
         }
         return fallback.get();
+    }
+
+    boolean useArtwork(Player player, DialogArtwork artwork, Set<String> loadedFiles, List<Component> lines) {
+        return size(player).showArtwork() && artwork != null && artwork.isAvailable(loadedFiles, lines);
     }
 
     /**
@@ -276,11 +338,13 @@ public final class DialogPrompts implements Listener, AutoCloseable {
 
     public boolean showMenu(Player player, Object owner, Component title, List<Component> body,
                             List<MenuButton> buttons, int columns, Runnable fallback, DialogArtwork artwork) {
-        int buttonWidth = columns >= 3 ? 102 : 150;
+        DialogSize size = size(player);
+        int standardWidth = columns >= 3 ? 102 : 150;
+        DialogSize.GridLayout grid = size.gridLayout(columns, standardWidth, buttons.size());
         return showOrFallback(player, owner, session -> {
             List<ActionButton> actions = new ArrayList<>();
             for (MenuButton button : buttons) {
-                ActionButton.Builder builder = ActionButton.builder(button.label()).width(buttonWidth);
+                ActionButton.Builder builder = ActionButton.builder(button.label()).width(grid.buttonWidth());
                 if (button.tooltip() != null) builder.tooltip(button.tooltip());
                 builder.action(DialogAction.customClick(
                         (response, audience) -> executeForSession(player, session, audience, button.action()),
@@ -290,9 +354,11 @@ public final class DialogPrompts implements Listener, AutoCloseable {
             DialogBase base = DialogBase.builder(title).pause(false).canCloseWithEscape(true)
                     .afterAction(DialogBase.DialogAfterAction.CLOSE)
                     .body(artworkBody(player, artwork, body)).build();
-            ActionButton close = ActionButton.builder(Component.text("关闭")).build();
+            ActionButton close = ActionButton.builder(Component.text("关闭"))
+                    .width(size.exitButtonWidth(150))
+                    .build();
             return Dialog.create(factory -> factory.empty().base(base)
-                    .type(DialogType.multiAction(actions, close, columns)));
+                    .type(DialogType.multiAction(actions, close, grid.columns())));
         }, fallback);
     }
 
@@ -610,20 +676,23 @@ public final class DialogPrompts implements Listener, AutoCloseable {
     }
 
     private Dialog buildTextDialog(Player player, ActiveSession session, TextPrompt prompt) {
+        DialogSize size = size(player);
+        int confirmWidth = size.confirmButtonWidth();
         List<DialogBody> bodies = buildBody(player, prompt.artwork, prompt.item, prompt.itemDescription, prompt.body);
         DialogInput input = DialogInput.text(INPUT_KEY, prompt.label)
                 .initial(prompt.initial)
                 .maxLength(Math.max(1, prompt.maxLength))
-                .width(Math.clamp(prompt.width, 1, 1024))
+                .width(Math.clamp(size.inputWidth(prompt.width), 1, 1024))
                 .build();
 
         ClickCallback.Options options = callbackOptions(prompt.timeoutSeconds);
         ActionButton confirmBtn = ActionButton.builder(prompt.confirmLabel)
+                .width(confirmWidth)
                 .action(DialogAction.customClick((view, audience) -> executeForSession(player, session, audience,
                         () -> safeAccept(session.onTextSubmit, safeText(view.getText(INPUT_KEY)))), options))
                 .build();
 
-        ActionButton.Builder cancelBuilder = ActionButton.builder(prompt.cancelLabel);
+        ActionButton.Builder cancelBuilder = ActionButton.builder(prompt.cancelLabel).width(confirmWidth);
         if (prompt.onCancel != null) {
             cancelBuilder.action(DialogAction.customClick(
                     (view, audience) -> dispatchCancel(player, session, audience), options));
@@ -643,15 +712,18 @@ public final class DialogPrompts implements Listener, AutoCloseable {
     }
 
     private Dialog buildConfirmDialog(Player player, ActiveSession session, ConfirmPrompt prompt) {
+        DialogSize size = size(player);
+        int confirmWidth = size.confirmButtonWidth();
         List<DialogBody> bodies = buildBody(player, prompt.artwork, prompt.item, prompt.itemDescription, prompt.body);
         ClickCallback.Options options = callbackOptions(prompt.timeoutSeconds);
 
         ActionButton confirmBtn = ActionButton.builder(prompt.confirmLabel)
+                .width(confirmWidth)
                 .action(DialogAction.customClick(
                         (view, audience) -> dispatchConfirm(player, session, audience), options))
                 .build();
 
-        ActionButton.Builder cancelBuilder = ActionButton.builder(prompt.cancelLabel);
+        ActionButton.Builder cancelBuilder = ActionButton.builder(prompt.cancelLabel).width(confirmWidth);
         if (prompt.onCancel != null) {
             cancelBuilder.action(DialogAction.customClick(
                     (view, audience) -> dispatchCancel(player, session, audience), options));
@@ -814,6 +886,11 @@ public final class DialogPrompts implements Listener, AutoCloseable {
         @Override
         public boolean prefersVanillaUi(Player player) {
             return DialogPrompts.isPreferVanillaUi(player);
+        }
+
+        @Override
+        public DialogSize dialogSize(Player player) {
+            return DialogPrompts.dialogSize(player);
         }
 
         @Override

@@ -3,16 +3,22 @@ package cn.ykn.dialog;
 import static org.junit.jupiter.api.Assertions.*;
 
 import io.papermc.paper.dialog.Dialog;
+import io.papermc.paper.registry.data.dialog.body.DialogBody;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
+import org.bukkit.persistence.PersistentDataContainer;
 import org.junit.jupiter.api.Test;
 
 class DialogPromptsTest {
@@ -238,6 +244,106 @@ class DialogPromptsTest {
         assertEquals(0, bridge.dialogsShown);
     }
 
+    @Test
+    void dialogSizePresetsCycleAndStayWithinPixelBounds() {
+        assertEquals(DialogSize.STANDARD, DialogSize.fromId(null));
+        assertEquals(DialogSize.STANDARD, DialogSize.fromId("unknown"));
+        assertEquals(DialogSize.COMPACT, DialogSize.fromId("COMPACT"));
+        assertEquals(DialogSize.MINI, DialogSize.fromId("mini"));
+
+        assertEquals(DialogSize.COMPACT, DialogSize.STANDARD.next());
+        assertEquals(DialogSize.MINI, DialogSize.COMPACT.next());
+        assertEquals(DialogSize.STANDARD, DialogSize.MINI.next());
+
+        for (int cols : List.of(1, 2, 3, 5)) {
+            for (int stdWidth : List.of(96, 108, 126, 160)) {
+                DialogSize.GridLayout compact = DialogSize.COMPACT.gridLayout(cols, stdWidth, 12);
+                assertTrue(compact.columns() >= 1 && compact.columns() <= 4);
+                int compactTotal = compact.columns() * compact.buttonWidth() + (compact.columns() - 1) * 8;
+                assertTrue(compactTotal <= 408, "compact width overflow: " + compactTotal);
+
+                DialogSize.GridLayout mini = DialogSize.MINI.gridLayout(cols, stdWidth, 12);
+                assertTrue(mini.columns() >= 1 && mini.columns() <= 2);
+                int miniTotal = mini.columns() * mini.buttonWidth() + (mini.columns() - 1) * 8;
+                assertTrue(miniTotal <= 292, "mini width overflow: " + miniTotal);
+            }
+        }
+
+        assertEquals(408, DialogSize.COMPACT.bodyWidth(520));
+        assertEquals(290, DialogSize.MINI.bodyWidth(520));
+        assertFalse(DialogSize.MINI.showArtwork());
+        assertTrue(DialogSize.COMPACT.showArtwork());
+        assertTrue(DialogSize.STANDARD.showArtwork());
+    }
+
+    @Test
+    void dialogSizePersistsToPlayerPdcAndMiniSuppressesArtwork() {
+        Map<NamespacedKey, Object> pdcData = new HashMap<>();
+        PersistentDataContainer pdc = (PersistentDataContainer) Proxy.newProxyInstance(
+                PersistentDataContainer.class.getClassLoader(),
+                new Class<?>[] {PersistentDataContainer.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "get" -> pdcData.get(args[0]);
+                    case "set" -> {
+                        pdcData.put((NamespacedKey) args[0], args[2]);
+                        yield null;
+                    }
+                    case "remove" -> {
+                        pdcData.remove(args[0]);
+                        yield null;
+                    }
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        Player player = fakePlayerWithPdc(UUID.randomUUID(), pdc);
+        assertEquals(DialogSize.STANDARD, DialogPrompts.dialogSize(player));
+        assertEquals(DialogSize.COMPACT, DialogPrompts.cycleDialogSize(player));
+        assertEquals("compact", pdcData.get(DialogPrompts.DIALOG_SIZE_PREFERENCE_KEY));
+        assertEquals(DialogSize.MINI, DialogPrompts.cycleDialogSize(player));
+        assertEquals("mini", pdcData.get(DialogPrompts.DIALOG_SIZE_PREFERENCE_KEY));
+        assertEquals(DialogSize.STANDARD, DialogPrompts.cycleDialogSize(player));
+        assertNull(pdcData.get(DialogPrompts.DIALOG_SIZE_PREFERENCE_KEY));
+
+        FakeBridge bridge = new FakeBridge(775);
+        DialogPrompts prompts = DialogPrompts.forTesting(bridge);
+        Set<String> packFiles = Set.of(
+                "assets/skyblock_dialog_art/font/panels.json",
+                "assets/skyblock_dialog_art/textures/font/bank_9_0.png",
+                "assets/skyblock_dialog_art/textures/font/bank_9_1.png");
+        List<Component> lines = List.of(Component.text("仅文本"));
+        assertTrue(prompts.useArtwork(player, DialogArtwork.BANK, packFiles, lines));
+
+        bridge.dialogSize = DialogSize.COMPACT;
+        assertTrue(prompts.useArtwork(player, DialogArtwork.BANK, packFiles, lines));
+
+        bridge.dialogSize = DialogSize.MINI;
+        assertEquals(DialogSize.MINI, prompts.size(player));
+        assertFalse(prompts.useArtwork(player, DialogArtwork.BANK, packFiles, lines));
+
+        AtomicBoolean fallbackUsed = new AtomicBoolean();
+        List<DialogBody> bodies = prompts.artworkBody(
+                player, DialogArtwork.BANK, lines, () -> {
+                    fallbackUsed.set(true);
+                    return List.of();
+                });
+        assertTrue(fallbackUsed.get());
+        assertTrue(bodies.isEmpty());
+        assertEquals(290, prompts.size(player).bodyWidth(DialogArtwork.WIDTH));
+    }
+
+    private static Player fakePlayerWithPdc(UUID id, PersistentDataContainer pdc) {
+        return (Player) Proxy.newProxyInstance(
+                Player.class.getClassLoader(),
+                new Class<?>[] {Player.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getUniqueId" -> id;
+                    case "isOnline" -> true;
+                    case "getPersistentDataContainer" -> pdc;
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> id.hashCode();
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+    }
+
     private static Player fakePlayer(UUID id, boolean online, List<String> sentMessages) {
         return (Player) Proxy.newProxyInstance(
                 Player.class.getClassLoader(),
@@ -261,6 +367,7 @@ class DialogPromptsTest {
     private static final class FakeBridge implements DialogPrompts.RuntimeBridge {
         private final int protocol;
         private boolean preferVanillaUi;
+        private DialogSize dialogSize = DialogSize.STANDARD;
         private boolean failShowDialog;
         private boolean deferMainThread;
         private int dialogsShown;
@@ -280,6 +387,11 @@ class DialogPromptsTest {
         @Override
         public boolean prefersVanillaUi(Player player) {
             return preferVanillaUi;
+        }
+
+        @Override
+        public DialogSize dialogSize(Player player) {
+            return dialogSize;
         }
 
         @Override
